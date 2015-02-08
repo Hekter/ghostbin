@@ -17,6 +17,7 @@ function usage() {
 	echo "        -i						- Use http" >&2
 	echo "        -I						- Use https, but disable certificate validation" >&2
 	echo "        -F						- Force (upgrade, for example)" >&2
+	echo "        -L						- Request Login" >&2
 }
 
 if [[ -z $1 ]]; then
@@ -35,7 +36,7 @@ export -a curl_opts=("-c" "${rcdir}/cookie.jar" "-b" "${rcdir}/cookie.jar" "-A" 
 force=0
 passworded=0
 
-while getopts "d:e:FhIilpS:s:Uu:x:" o; do
+while getopts "d:e:FhIiLlpS:s:t:Uu:x:" o; do
 	case $o in
 		d)
 			mode="delete"
@@ -57,6 +58,9 @@ while getopts "d:e:FhIilpS:s:Uu:x:" o; do
 			;;
 		i)
 			proto="http"
+			;;
+		L)
+			mode="login"
 			;;
 		l)
 			mode="list"
@@ -155,6 +159,47 @@ elif [[ "${mode}" == "list" ]]; then
 	for i in "${pastes[@]}"; do
 		echo "$i: ${server}/paste/$i"
 	done
+	exit
+elif [[ "${mode}" == "login" ]]; then
+	url="${server}/auth/token"
+	IFS='|' read -r code url < <(curl "${curl_opts[@]}" -w '%{http_code}|%{redirect_url}' "${url}" | sed -e 's/HTTP/http/g')
+	if [[ $code -ne 200 && $code -ne 303 && $code -ne 302 ]]; then
+		echo "Rejected: $code" >&2
+		exit 1
+	fi
+
+	token=${url##*/}
+
+	echo "To log in, please visit $url" >&2
+
+	type open &> /dev/null && open "$url"
+	type xdg-open &> /dev/null && xdg-open "$url"
+
+	echo "" >&2
+	echo "(waiting for login)" >&2
+	{
+		l=0
+		trap "l=-1" 2       # INT
+		filename=$(mktemp /tmp/ghost.XXXXXX)
+		while [[ $l -eq 0 ]]; do
+			sleep 2
+			IFS='|' read -r code < <(curl -w '%{http_code}' -o "${filename}" "${curl_opts[@]}" --data-urlencode "type=token" --data-urlencode "token=${token}" "${server}/auth/login")
+			if [[ $code -ne 200 && $code -ne 418 ]]; then
+				echo "" >&2
+				echo "Login Rejected. Detailed response follows." >&2
+				cat "${filename}" >&2
+				echo "" >&2
+				l=-1
+			elif [[ $code -eq 200 ]]; then
+				echo "" >&2
+				echo "Success!" >&2
+				l=1
+			else
+				printf "."
+			fi
+		done
+		rm -f "${filename}"
+	}
 	exit
 fi
 

@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"io"
 	"net/http"
+	"time"
 )
 
 type RenderContext struct {
@@ -25,7 +26,7 @@ func RegisterTemplateFunction(name string, function interface{}) {
 
 func InitTemplates() {
 	tmpl = func() *template.Template {
-		return template.Must(template.New("base").Funcs(templateFunctions).ParseGlob("templates/*.html"))
+		return template.Must(template.New("base").Funcs(templateFunctions).ParseGlob("templates/*.tmpl"))
 	}
 	if !arguments.rebuild {
 		glog.Info("Caching templates.")
@@ -56,6 +57,22 @@ func init() {
 			return template.HTML("")
 		}
 		return template.HTML(buf.String())
+	})
+
+	RegisterTemplateFunction("partial", func(ctx *RenderContext, name string) template.HTML {
+		buf := &bytes.Buffer{}
+		err := ctx.template.ExecuteTemplate(buf, "partial_"+name, ctx)
+		divId := "partial_container_" + name
+		if err != nil {
+			buf = &bytes.Buffer{}
+			ctx.Obj = err
+			ctx.template.ExecuteTemplate(buf, "partial_error", ctx)
+		}
+		return template.HTML(`<div id="` + divId + `">` + buf.String() + `</div>`)
+	})
+
+	RegisterTemplateFunction("now", func() time.Time {
+		return time.Now()
 	})
 
 	RegisterReloadFunction(InitTemplates)

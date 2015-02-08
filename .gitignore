@@ -9,6 +9,7 @@ ghostbin
 paste
 paste.linux
 pastes/*
+public/css/*.less.css
 public/css/*.gen.css
 public/css/*.min.css
 public/js/*.gen.js
@@ -19,3 +20,6 @@ session.key
 sessions/session_*
 templates/_local.html
 xattr
+accounts/*
+_assets.mk
+assetbuild

@@ -10,7 +10,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/gorilla/mux"
 	"io"
-	"launchpad.net/goyaml"
+	"gopkg.in/yaml.v2"
 	"net/http"
 	"os"
 	"os/signal"
@@ -83,7 +83,7 @@ func YAMLUnmarshalFile(filename string, i interface{}) error {
 	yml := make([]byte, fi.Size())
 	io.ReadFull(yamlFile, yml)
 	yamlFile.Close()
-	err = goyaml.Unmarshal(yml, i)
+	err = yaml.Unmarshal(yml, i)
 	if err != nil {
 		return err
 	}
@@ -103,10 +103,6 @@ func SlurpFile(path string) (out []byte, err error) {
 }
 
 func RequestIsHTTPS(r *http.Request) bool {
-	if Env() == EnvironmentDevelopment {
-		return true
-	}
-
 	proto := strings.ToLower(r.Header.Get("X-Forwarded-Proto"))
 	if proto == "" {
 		proto = strings.ToLower(r.URL.Scheme)
@@ -123,11 +119,11 @@ func SourceIPForRequest(r *http.Request) string {
 }
 
 func HTTPSMuxMatcher(r *http.Request, rm *mux.RouteMatch) bool {
-	return RequestIsHTTPS(r)
+	return Env() == EnvironmentDevelopment || RequestIsHTTPS(r)
 }
 
 func NonHTTPSMuxMatcher(r *http.Request, rm *mux.RouteMatch) bool {
-	return !RequestIsHTTPS(r)
+	return !HTTPSMuxMatcher(r, rm)
 }
 
 type ReloadFunction func()

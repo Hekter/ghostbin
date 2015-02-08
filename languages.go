@@ -3,8 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/golang/glog"
-	"github.com/knieriem/markdown"
 	"html/template"
 	"io"
 	"os"
@@ -12,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/golang/glog"
 )
 
 type Language struct {
@@ -54,9 +54,9 @@ type _LanguageConfiguration struct {
 	} `yaml:"languageGroups"`
 	Formatters map[string]*Formatter
 
-	languageMap  map[string]*Language
-	modtime      time.Time
-	languageJSON []byte
+	languageMap        map[string]*Language
+	modtime            time.Time
+	languageJSONReader *bytes.Reader
 }
 
 var languageConfig _LanguageConfiguration
@@ -103,16 +103,6 @@ func commandFormatter(formatter *Formatter, stream io.Reader, args ...string) (o
 	return
 }
 
-func markdownFormatter(formatter *Formatter, stream io.Reader, args ...string) (string, error) {
-	buf := &bytes.Buffer{}
-	markdownParser := markdown.NewParser(&markdown.Extensions{
-		Smart:      true,
-		FilterHTML: true,
-	})
-	markdownParser.Markdown(stream, markdown.ToHTML(buf))
-	return buf.String(), nil
-}
-
 func plainTextFormatter(formatter *Formatter, stream io.Reader, args ...string) (string, error) {
 	buf := &bytes.Buffer{}
 	io.Copy(buf, stream)
@@ -125,16 +115,20 @@ var formatFunctions map[string]FormatFunc = map[string]FormatFunc{
 	"markdown":         markdownFormatter,
 }
 
-func FormatPaste(p *Paste) (string, error) {
+func FormatStream(r io.Reader, language *Language) (string, error) {
 	var formatter *Formatter
 	var ok bool
-	if formatter, ok = languageConfig.Formatters[p.Language.Formatter]; !ok {
+	if formatter, ok = languageConfig.Formatters[language.Formatter]; !ok {
 		formatter = languageConfig.Formatters["default"]
 	}
 
+	return formatter.Format(r, language.ID)
+}
+
+func FormatPaste(p *Paste) (string, error) {
 	reader, _ := p.Reader()
 	defer reader.Close()
-	return formatter.Format(reader, p.Language.ID)
+	return FormatStream(reader, p.Language)
 }
 
 func loadLanguageConfig() {
@@ -164,7 +158,8 @@ func loadLanguageConfig() {
 
 	fi, _ := os.Stat("languages.yml")
 	languageConfig.modtime = fi.ModTime()
-	languageConfig.languageJSON, _ = json.Marshal(languageConfig.LanguageGroups)
+	languageJSON, _ := json.Marshal(languageConfig.LanguageGroups)
+	languageConfig.languageJSONReader = bytes.NewReader(languageJSON)
 }
 
 func init() {

@@ -1,53 +1,20 @@
-/* From http://stackoverflow.com/questions/4217962/scroll-to-an-element-using-jquery */
-(function($){
-	"use strict";
-	$.fn.fillWithLineNumbers = function(lines, callback) {
-		var lineNumberTrough = $(this[0]);
-		if(lines === (0+lineNumberTrough.data("lines"))) return;
-
-		var n="";
-		var i = 0;
-		for(i=0; i < lines; i++) {
-			n += "<span>"+(i+1)+"</span>";
-		}
-		lineNumberTrough.html(n);
-
-		lineNumberTrough.data("lines", lines);
-		if(callback) callback();
-	};
-	$.fn.scrollMinimal = function() {
-		var cTop = this.offset().top;
-		var cHeight = this.outerHeight(true);
-		var windowTop = $(window).scrollTop();
-		var visibleHeight = $(window).height();
-
-		if (cTop < windowTop) {
-			$(window).scrollTop(cTop);
-		} else if (cTop + cHeight > windowTop + visibleHeight) {
-			$(window).scrollTop(cTop - visibleHeight + cHeight);
-		}
-	};
-	$.fn.onMediaQueryChanged = function(mediaQuery, callback) {
-		var self = this;
-		var mql = window.matchMedia(mediaQuery);
-		var lastMqlMatch;
-		var mqlListener = function(mql) {
-			if(mql.matches === lastMqlMatch) return;
-			callback.call(self, mql);
-			lastMqlMatch = mql.matches;
-			$(document).trigger("media-query-changed", mql);
-		};
-		mqlListener(mql);
-		mql.addListener(mqlListener);
-	};
-})(jQuery);
-
 (function(window) {
 	"use strict";
 	window.Ghostbin = function() {
 		var _s2Languages;
 		var _languageMap;
 		return {
+			formatDuration: function(seconds) {
+				seconds = seconds | 0;
+				if(seconds < 60) {
+					return ""+seconds+"s";
+				} else if(seconds < 3600) {
+					return ""+((seconds/60)|0)+"m"+((seconds%60)|0)+"s";
+				} else { 
+					// if(seconds < 86400) {
+					return ""+((seconds/3600)|0)+"h"+(((seconds%3600)/60)|0)+"m"+((seconds%60)|0)+"s";
+				}
+			},
 			loadLanguages: function() {
 				var s2Languages = {
 					more: false,
@@ -114,6 +81,86 @@
 			clearPreference: function(k) {
 				delete localStorage[k];
 			},
+			updatePartial: function(name) {
+				$.ajax({
+					type: "GET",
+					url: "/partial/"+name,
+					async: false,
+					dataType: "html",
+					success: function(reply) {
+						$("#partial_container_"+name).html(reply);
+					}
+				});
+			},
+			_loginReplyHandler: function(reply) {
+				$("#partial_container_login_logout .blocker").fadeOut("fast");
+				switch(reply.status) {
+					case "valid":
+						$("#login_error").text("").hide(400);
+						if(reply.type === "persona") {
+							Ghostbin.setPreference("persona", reply.extra.persona);
+						}
+						Ghostbin.updatePartial("login_logout");
+						break;
+					case "moreinfo":
+						$("#login_error").text("").hide(400);
+						if(typeof reply.invalid_fields !== "undefined") {
+							$.each(reply.invalid_fields, function(i, v) {
+								var field = $("form#loginForm input[name="+v+"]");
+								field.parents(".control-group").eq(0).show(400);
+								field.focus();
+							});
+						}
+						break;
+					case "invalid":
+						if(typeof reply.invalid_fields !== "undefined") {
+							$.each(reply.invalid_fields, function(i, v) {
+								$("form#loginForm input[name="+v+"]").parents(".control-group").eq(0).addClass("error");
+							});
+						}
+						if(typeof reply.reason !== "undefined") {
+							$("#login_error").text(reply.reason).show(400);
+						}
+						break;
+				}
+			},
+			login: function(data) {
+				$("#partial_container_login_logout .blocker").fadeIn("fast");
+				$("form#loginForm .control-group").removeClass("error");
+				$.ajax({
+					type: "POST",
+					url: "/auth/login",
+					async: true,
+					dataType: "json",
+					data: data,
+					success: Ghostbin._loginReplyHandler,
+					error: function() {
+						$("#partial_container_login_logout .blocker").fadeOut("fast");
+						// In case we were attempting a persona login.
+						navigator.id.logout();
+					},
+				});
+			},
+			logout: function() {
+				$("#partial_container_login_logout .blocker").fadeIn("fast");
+				$.ajax({
+					type: "POST",
+					url: "/auth/logout",
+					async: true,
+					success: function() {
+						$("#partial_container_login_logout .blocker").fadeOut("fast");
+						if(Ghostbin.getPreference("persona", null)) {
+							navigator.id.logout();
+							Ghostbin.clearPreference("persona");
+						}
+						Ghostbin.updatePartial("login_logout");
+					},
+					failure: function(wat) {
+						$("#partial_container_login_logout .blocker").fadeOut("fast");
+						alert(wat);
+					}
+				});
+			},
 		};
 	}();
 })(window);
@@ -179,10 +226,18 @@ $(function() {
 						Ghostbin.clearDefaultLanguage();
 					}
 				}
+				pasteForm.find("input[name='title']").val($("#editable-paste-title").text())
 			} else {
 				$("#deleteModal, #emptyPasteModal").modal("show");
 				return false;
 			}
+		});
+		$("#editable-paste-title").keypress(function(e) {
+			if(e.which == 13) {
+				$(codeeditor).focus();
+				return false;
+			}
+			return true;
 		});
 	}
 
@@ -358,6 +413,27 @@ $(function() {
 					this.selectionStart = this.selectionEnd = ends[0] + 1;
 					return false;
 				}
+				if(e.keyCode === 83 && e.ctrlKey && !e.altKey && !e.shiftKey) {
+					pasteForm.submit();
+					return false;
+				}
+			});
+
+			var changed = false;
+			codeeditor.on("input propertychange", function() {
+				changed = true;
+			});
+			pasteForm.on("submit", function() {
+				changed = false;
+			});
+
+			window.addEventListener("beforeunload", function(e) {
+				if(!changed) {
+					return;
+				}
+				var confirmationMessage = "If you leave now, your paste will not be saved.";
+				(e || window.event).returnValue = confirmationMessage;
+				return confirmationMessage;
 			});
 		}
 	})();
@@ -371,5 +447,39 @@ $(function() {
 			show: 250,
 			hide: 50,
 		},
+	});
+	var pageLoadTime = Math.floor(new Date().getTime() / 1000);
+	$('#expirationIcon').tooltip({
+		trigger: "hover",
+		placement: "bottom",
+		container: "body",
+		title: function() {
+			var refTime = (0+$(this).data("reftime"));
+			var curTime = Math.floor(new Date().getTime() / 1000);
+			var adjust = pageLoadTime - refTime; // For the purpose of illustration, assume computer clock is faster.
+			var remaining = ((0+$(this).data("value")) + adjust - curTime);
+			if(remaining > 0) {
+				return "Expires in " + window.Ghostbin.formatDuration(remaining);
+			} else {
+				var r = Math.random();
+				return (r <= 0.5) ? "Wha-! It's going to explode! Get out while you still can!" : "He's dead, Jim.";
+			}
+		},
+		delay: {
+			show: 250,
+			hide: 50,
+		},
+	});
+	navigator.id.watch({
+		loggedInUser: Ghostbin.getPreference("persona", null),
+		onlogin: function(assertion) {
+			var data = $("#loginForm").serializeObject();
+			data["type"] = "persona";
+			data["assertion"] = assertion;
+			Ghostbin.login(data);
+		},
+		onlogout: function() {
+			Ghostbin.logout();
+		}
 	});
 });

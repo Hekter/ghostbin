@@ -1,0 +1,83 @@
+{{define "tmpl_page"}}<!DOCTYPE HTML>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+
+	{{with subtemplate . "title"}}
+	<title>{{.}} - Ghostbin</title>
+	{{else}}
+	<title>Ghostbin</title>
+	{{end}}
+	<meta name="viewport" content="user-scalable=no, initial-scale=1.0, maximum-scale=1.0">
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-status-bar-style" content="black">
+	<link rel="icon" href="/favicon.ico">
+	<link rel="apple-touch-icon" href="/ghostbin-icon120.png" sizes="120x120">
+	<link rel="apple-touch-icon" href="/ghostbin-icon152.png" sizes="152x152">
+	<link rel="apple-touch-icon" href="/ghostbin-icon76.png" sizes="76x76">
+	<link rel="apple-touch-icon" href="/ghostbin-icon72.png" sizes="72x72">
+	{{assets "css_libs"}}
+	{{assets "css_ghostbin"}}
+	{{assets "less_ghostbin"}}
+	{{assets "css_theme"}}
+	{{assets "js_libs"}}
+	{{assets "js_core"}}
+	{{subtemplate . "head"}}
+</head>
+<body>{{with subtemplate . "body"}}
+{{.}}
+{{else}}
+{{template "missing_page_body" .}}
+{{end}}
+<script src="https://login.persona.org/include.js"></script>
+</body>
+</html>{{end}}
+
+{{define "home-button"}}
+<a title="Home" href="/" id="home" class="btn btn-inverse"><i class="icon-home icon-large"></i></a>
+{{end}}
+
+{{define "missing_page_body"}}
+<div class="paste-toolbox">
+	{{template "home-button"}}
+	<span class="paste-title">
+		<strong>Wat Machine</strong>
+	</span>
+</div>
+<div class="content">
+<p>
+<strong>AIEEEEEE!</strong><br>
+It looks like you've stumbled upon a page (<strong>{{.Page}}</strong>) that should exist, but doesn't have a template?
+</p>
+</div>
+{{end}}
+
+{{define "options_modal"}}
+<div id="optionsModal" class="modal hide fade" tabindex="-1" role="dialog" aria-hidden="true">
+	<div class="modal-header">
+		<button type="button" class="close" data-dismiss="modal" aria-hidden="true">x</button>
+		<h3>Options</h3>
+	</div>
+	<div class="modal-body">
+		<h4><i class="icon icon-remember"> </i>Persistence</h4>
+		<label class="checkbox">
+			<input name="saveLanguage" type="checkbox" data-gb-key="saveLanguage"> Remember my last-used language
+		</label>
+		<label class="checkbox">
+			<input name="saveExpiration" type="checkbox" data-gb-key="saveExpiration"> Remember my last-used expiration
+		</label>
+		<h4><i class="icon icon-user"> </i>Account</h4>
+		{{partial . "login_logout"}}
+		<h4><i class="icon icon-wrench"> </i>Miscellanea</h4>
+		<p><a target="_blank" href="/about">About Ghostbin</a> <small>(in a new window)</small>
+		<br><a href="/session">My Pastes</a></p>
+	</div>
+	<div class="modal-footer">
+		<button data-dismiss="modal" class="btn" aria-hidden="true">Okay</button>
+	</div>
+</div>
+{{end}}
+
+{{define "asset_js"}}{{with .Obj}}<script src="{{.Path}}?{{.Mtime.Unix}}" type="text/javascript"></script>{{end}}{{end}}
+{{define "asset_css"}}{{with .Obj}}<link rel="stylesheet" href="{{.Path}}?{{.Mtime.Unix}}" type="text/css" media="all">{{end}}{{end}}
+{{define "asset_less"}}{{with .Obj}}<link rel="stylesheet/less" href="{{.Path}}?{{.Mtime.Unix}}" type="text/css" media="all">{{end}}{{end}}

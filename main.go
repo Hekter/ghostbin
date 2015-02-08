@@ -1,25 +1,32 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/md5"
 	"encoding/gob"
+	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/DHowett/gotimeout"
-	"github.com/golang/glog"
-	"github.com/golang/groupcache/lru"
-	"github.com/gorilla/mux"
-	"github.com/gorilla/sessions"
 	"html/template"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/DHowett/ghostbin/account"
+	"github.com/DHowett/gotimeout"
+	"github.com/golang/glog"
+	"github.com/golang/groupcache/lru"
+	"github.com/gorilla/mux"
+	"github.com/gorilla/securecookie"
+	"github.com/gorilla/sessions"
 )
 
 const PASTE_CACHE_MAX_ENTRIES int = 1000
@@ -58,6 +65,27 @@ func (e PasteTooLargeError) StatusCode() int {
 	return http.StatusBadRequest
 }
 
+func getPasteJSONHandler(o Model, w http.ResponseWriter, r *http.Request) {
+	p := o.(*Paste)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+
+	reader, _ := p.Reader()
+	defer reader.Close()
+	buf := &bytes.Buffer{}
+	io.Copy(buf, reader)
+
+	pasteMap := map[string]interface{}{
+		"id":         p.ID,
+		"language":   p.Language,
+		"encrypted":  p.Encrypted,
+		"expiration": p.Expiration,
+		"body":       string(buf.Bytes()),
+	}
+
+	json, _ := json.Marshal(pasteMap)
+	w.Write(json)
+}
+
 func getPasteRawHandler(o Model, w http.ResponseWriter, r *http.Request) {
 	p := o.(*Paste)
 	mime := "text/plain"
@@ -74,9 +102,14 @@ func getPasteRawHandler(o Model, w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		w.Header().Set("Content-Disposition", "attachment; filename=\""+p.ID.String()+"."+ext+"\"")
+		filename := p.ID.String()
+		if p.Title != "" {
+			filename = p.Title
+		}
+		w.Header().Set("Content-Disposition", "attachment; filename=\""+filename+"."+ext+"\"")
 		w.Header().Set("Content-Transfer-Encoding", "binary")
 	}
+	w.Header().Set("Content-Security-Policy", "default-src 'none'")
 	w.Header().Set("Content-Type", mime+"; charset=utf-8")
 
 	reader, _ := p.Reader()
@@ -84,19 +117,48 @@ func getPasteRawHandler(o Model, w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, reader)
 }
 
+var grants map[string]PasteID = map[string]PasteID{}
+
+func pasteGrantHandler(o Model, w http.ResponseWriter, r *http.Request) {
+	p := o.(*Paste)
+
+	grantKey, _ := generateRandomBase32String(20, 32)
+	grants[grantKey] = p.ID
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	url, _ := pasteRouter.Get("grant_accept").URL("grantkey", grantKey)
+	s := "<html><body><a href=\"" + url.String() + "\">grant link</a></html></body>"
+	w.Write([]byte(s))
+}
+
+func grantAcceptHandler(w http.ResponseWriter, r *http.Request) {
+	v := mux.Vars(r)
+	grantKey := v["grantkey"]
+	sID, ok := grants[grantKey]
+	if !ok {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write([]byte("Hey."))
+		return
+	}
+	pID := PasteID(sID)
+
+	perms := GetPastePermissions(r)
+	perms.Put(pID, PastePermission{"edit": true})
+	perms.Save(w, r)
+
+	delete(grants, grantKey)
+
+	w.Header().Set("Location", pasteURL("show", &Paste{ID: pID}))
+	w.WriteHeader(http.StatusSeeOther)
+}
+
 func isEditAllowed(p *Paste, r *http.Request) bool {
-	session, _ := sessionStore.Get(r, "session")
-	pastes, ok := session.Values["pastes"].([]string)
+	perms := GetPastePermissions(r)
+	perm, ok := perms.Get(p.ID)
 	if !ok {
 		return false
 	}
 
-	for _, v := range pastes {
-		if v == p.ID.String() {
-			return true
-		}
-	}
-	return false
+	return perm["edit"]
 }
 
 func requiresEditPermission(fn ModelRenderFunc) ModelRenderFunc {
@@ -110,6 +172,26 @@ func requiresEditPermission(fn ModelRenderFunc) ModelRenderFunc {
 		}
 		fn(p, w, r)
 	}
+}
+
+func requiresUserPermission(permission string, handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer errorRecoveryHandler(w)
+
+		user := GetUser(r)
+		if user != nil {
+			if o, ok := user.Values["user.permissions"]; ok {
+				if perms, ok := o.(PastePermission); ok {
+					if perms[permission] {
+						handler.ServeHTTP(w, r)
+						return
+					}
+				}
+			}
+		}
+
+		panic(fmt.Errorf("You are not allowed to be here. >:|"))
+	})
 }
 
 func pasteUpdate(o Model, w http.ResponseWriter, r *http.Request) {
@@ -165,6 +247,8 @@ func pasteUpdateCore(o Model, w http.ResponseWriter, r *http.Request, newPaste b
 
 	p.Expiration = expireIn
 
+	p.Title = r.FormValue("title")
+
 	pw.Close() // Saves p
 
 	w.Header().Set("Location", pasteURL("show", p))
@@ -189,7 +273,7 @@ func pasteCreate(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 	encrypted := password != ""
 
-	if encrypted && !RequestIsHTTPS(r) {
+	if encrypted && (Env() != EnvironmentDevelopment && !RequestIsHTTPS(r)) {
 		RenderError(fmt.Errorf("I refuse to accept passwords over HTTP."), 400, w)
 		return
 	}
@@ -219,17 +303,15 @@ func pasteCreate(w http.ResponseWriter, r *http.Request) {
 	key := p.EncryptionKeyWithPassword(password)
 	p.SetEncryptionKey(key)
 
-	session, _ := sessionStore.Get(r, "session")
-	pastes, ok := session.Values["pastes"].([]string)
-	if !ok {
-		pastes = []string{}
-	}
-
-	pastes = append(pastes, p.ID.String())
-	session.Values["pastes"] = pastes
+	perms := GetPastePermissions(r)
+	perms.Put(p.ID, PastePermission{"edit": true, "grant": true})
+	perms.Save(w, r)
 
 	if key != nil {
-		cliSession, _ := clientOnlySessionStore.Get(r, "c_session")
+		cliSession, err := clientOnlySessionStore.Get(r, "c_session")
+		if err != nil {
+			glog.Errorln(err)
+		}
 		pasteKeys, ok := cliSession.Values["paste_keys"].(map[PasteID][]byte)
 		if !ok {
 			pasteKeys = map[PasteID][]byte{}
@@ -239,7 +321,10 @@ func pasteCreate(w http.ResponseWriter, r *http.Request) {
 		cliSession.Values["paste_keys"] = pasteKeys
 	}
 
-	sessions.Save(r, w)
+	err = sessions.Save(r, w)
+	if err != nil {
+		glog.Errorln(err)
+	}
 
 	pasteUpdateCore(p, w, r, true)
 }
@@ -247,26 +332,22 @@ func pasteCreate(w http.ResponseWriter, r *http.Request) {
 func pasteDelete(o Model, w http.ResponseWriter, r *http.Request) {
 	p := o.(*Paste)
 
-	oldId := p.ID.String()
+	oldId := p.ID
 	p.Destroy()
 
-	session, _ := sessionStore.Get(r, "session")
+	perms := GetPastePermissions(r)
+	perms.Delete(oldId)
+	perms.Save(w, r)
 
-	if session_pastes, ok := session.Values["pastes"].([]string); ok {
-		pastes := make([]string, len(session_pastes)-1)
-		n := 0
-		for _, v := range session_pastes {
-			if v == oldId {
-				continue
-			}
-			pastes[n] = v
-			n++
+	components := append([]string{"/"}, strings.Split(r.URL.Path, "/")...)
+	n := 0
+	for i, v := range components {
+		if v == "paste" {
+			n = i
+			break
 		}
-		session.Values["pastes"] = pastes[:n]
-		session.Save(r, w)
 	}
-
-	w.Header().Set("Location", "/")
+	w.Header().Set("Location", path.Join(components[:n]...))
 	w.WriteHeader(http.StatusFound)
 }
 
@@ -274,7 +355,10 @@ func lookupPasteWithRequest(r *http.Request) (Model, error) {
 	id := PasteIDFromString(mux.Vars(r)["id"])
 	var key []byte
 
-	cliSession, _ := clientOnlySessionStore.Get(r, "c_session")
+	cliSession, err := clientOnlySessionStore.Get(r, "c_session")
+	if err != nil {
+		glog.Errorln(err)
+	}
 	if pasteKeys, ok := cliSession.Values["paste_keys"].(map[PasteID][]byte); ok {
 		if _key, ok := pasteKeys[id]; ok {
 			key = _key
@@ -312,24 +396,19 @@ func pasteURL(routeType string, p *Paste) string {
 func sessionHandler(w http.ResponseWriter, r *http.Request) {
 	var pastes []*Paste
 	var ids []string
-	session, _ := sessionStore.Get(r, "session")
-	if session_pastes, ok := session.Values["pastes"].([]string); ok {
-		pastes = make([]*Paste, len(session_pastes))
-		ids = make([]string, len(session_pastes))
-		n := 0
-		for _, v := range session_pastes {
-			if obj, _ := pasteStore.Get(PasteIDFromString(v), nil); obj != nil {
-				pastes[n] = obj
-				ids[n] = obj.ID.String()
-				n++
-			}
+	perms := GetPastePermissions(r)
+	pastes = make([]*Paste, len(perms.Entries))
+	ids = make([]string, len(perms.Entries))
+	n := 0
+	for k, _ := range perms.Entries {
+		if obj, _ := pasteStore.Get(k, nil); obj != nil {
+			pastes[n] = obj
+			ids[n] = obj.ID.String()
+			n++
 		}
-		pastes = pastes[:n]
-		ids = ids[:n]
-	} else {
-		pastes = []*Paste{}
-		ids = []string{}
 	}
+	pastes = pastes[:n]
+	ids = ids[:n]
 
 	if strings.HasSuffix(r.URL.Path, "/raw") {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -365,6 +444,9 @@ func authenticatePastePOSTHandler(w http.ResponseWriter, r *http.Request) {
 		pasteKeys[id] = key
 		cliSession.Values["paste_keys"] = pasteKeys
 		sessions.Save(r, w)
+		if err != nil {
+			glog.Errorln(err)
+		}
 	}
 
 	url, _ := pasteRouter.Get("show").URL("id", id.String())
@@ -419,6 +501,11 @@ type RedirectHandler string
 func (h RedirectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Location", string(h))
 	w.WriteHeader(http.StatusFound)
+}
+
+func partialGetHandler(w http.ResponseWriter, r *http.Request) {
+	name := mux.Vars(r)["id"]
+	RenderPartial(w, r, name, nil)
 }
 
 type RenderedPaste struct {
@@ -492,28 +579,40 @@ func pasteDestroyCallback(p *Paste) {
 	glog.Info("RENDER CACHE: Removing ", p.ID, " due to destruction.")
 	// Clear the cached render when a paste is destroyed
 	renderCache.c.Remove(p.ID)
+
+	reportStore.Delete(p.ID)
 }
 
 var pasteStore *FilesystemPasteStore
 var pasteExpirator *gotimeout.Expirator
 var sessionStore *sessions.FilesystemStore
 var clientOnlySessionStore *sessions.CookieStore
+var clientLongtermSessionStore *sessions.CookieStore
 var ephStore *gotimeout.Map
+var userStore account.AccountStore
 var pasteRouter *mux.Router
+var router *mux.Router
 
 type args struct {
 	root, addr string
 	rebuild    bool
+
+	registrationOnce sync.Once
+	parseOnce        sync.Once
 }
 
 func (a *args) register() {
-	flag.StringVar(&a.root, "root", "./", "path to generated file storage")
-	flag.StringVar(&a.addr, "addr", "0.0.0.0:8080", "bind address and port")
-	flag.BoolVar(&a.rebuild, "rebuild", false, "rebuild all templates for each request")
+	a.registrationOnce.Do(func() {
+		flag.StringVar(&a.root, "root", "./", "path to generated file storage")
+		flag.StringVar(&a.addr, "addr", "0.0.0.0:8080", "bind address and port")
+		flag.BoolVar(&a.rebuild, "rebuild", false, "rebuild all templates for each request")
+	})
 }
 
 func (a *args) parse() {
-	flag.Parse()
+	a.parseOnce.Do(func() {
+		flag.Parse()
+	})
 }
 
 var arguments = &args{}
@@ -521,17 +620,48 @@ var arguments = &args{}
 func init() {
 	// N.B. this should not be necessary.
 	gob.Register(map[PasteID][]byte(nil))
+	gob.Register(&PastePermissionSet{})
+	gob.Register(PastePermission{})
 
 	arguments.register()
 	arguments.parse()
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
-	RegisterTemplateFunction("encryptionAllowed", func(ri *RenderContext) bool { return RequestIsHTTPS(ri.Request) })
+	RegisterTemplateFunction("encryptionAllowed", func(ri *RenderContext) bool { return Env() == EnvironmentDevelopment || RequestIsHTTPS(ri.Request) })
 	RegisterTemplateFunction("editAllowed", func(ri *RenderContext) bool { return isEditAllowed(ri.Obj.(*Paste), ri.Request) })
 	RegisterTemplateFunction("render", renderPaste)
 	RegisterTemplateFunction("pasteURL", pasteURL)
 	RegisterTemplateFunction("pasteWillExpire", func(p *Paste) bool {
 		return p.Expiration != "" && p.Expiration != "-1"
+	})
+	RegisterTemplateFunction("pasteFromID", func(id PasteID) *Paste {
+		p, err := pasteStore.Get(id, nil)
+		if err != nil {
+			return nil
+		}
+		return p
+	})
+	RegisterTemplateFunction("truncatedPasteBody", func(p *Paste, lines int) string {
+		reader, _ := p.Reader()
+		defer reader.Close()
+		bufReader := bufio.NewReader(reader)
+		s := ""
+		n := 0
+		for n < lines {
+			line, err := bufReader.ReadString('\n')
+			if err != io.EOF && err != nil {
+				break
+			}
+			s = s + line
+			if err == io.EOF {
+				break
+			}
+			n++
+		}
+		if n == lines {
+			s += "..."
+		}
+		return s
 	})
 	RegisterTemplateFunction("pasteBody", func(p *Paste) string {
 		reader, _ := p.Reader()
@@ -545,17 +675,27 @@ func init() {
 	sesdir := filepath.Join(arguments.root, "sessions")
 	os.Mkdir(sesdir, 0700)
 
-	sessionKey, err := SlurpFile(filepath.Join(arguments.root, "session.key"))
+	sessionKeyFile := filepath.Join(arguments.root, "session.key")
+	sessionKey, err := SlurpFile(sessionKeyFile)
 	if err != nil {
-		glog.Fatal("session.key not found. make one with seskey.go?")
+		sessionKey = securecookie.GenerateRandomKey(32)
+		err = ioutil.WriteFile(sessionKeyFile, sessionKey, 0600)
+		if err != nil {
+			glog.Fatal("session.key not found, and an attempt to create one failed: ", err)
+		}
 	}
 	sessionStore = sessions.NewFilesystemStore(sesdir, sessionKey)
 	sessionStore.Options.Path = "/"
 	sessionStore.Options.MaxAge = 86400 * 365
 
-	clientOnlySessionEncryptionKey, err := SlurpFile(filepath.Join(arguments.root, "client_session_enc.key"))
+	clientKeyFile := filepath.Join(arguments.root, "client_session_enc.key")
+	clientOnlySessionEncryptionKey, err := SlurpFile(clientKeyFile)
 	if err != nil {
-		glog.Fatal("client_session_enc.key not found. make one with seskey.go?")
+		clientOnlySessionEncryptionKey = securecookie.GenerateRandomKey(32)
+		err = ioutil.WriteFile(clientKeyFile, clientOnlySessionEncryptionKey, 0600)
+		if err != nil {
+			glog.Fatal("client_session_enc.key not found, and an attempt to create one failed: ", err)
+		}
 	}
 	clientOnlySessionStore = sessions.NewCookieStore(sessionKey, clientOnlySessionEncryptionKey)
 	if Env() != EnvironmentDevelopment {
@@ -564,6 +704,13 @@ func init() {
 	clientOnlySessionStore.Options.Path = "/"
 	clientOnlySessionStore.Options.MaxAge = 0
 
+	clientLongtermSessionStore = sessions.NewCookieStore(sessionKey, clientOnlySessionEncryptionKey)
+	if Env() != EnvironmentDevelopment {
+		clientLongtermSessionStore.Options.Secure = true
+	}
+	clientLongtermSessionStore.Options.Path = "/"
+	clientLongtermSessionStore.Options.MaxAge = 86400 * 365
+
 	pastedir := filepath.Join(arguments.root, "pastes")
 	os.Mkdir(pastedir, 0700)
 	pasteStore = NewFilesystemPasteStore(pastedir)
@@ -571,6 +718,14 @@ func init() {
 
 	pasteExpirator = gotimeout.NewExpirator(filepath.Join(arguments.root, "expiry.gob"), &ExpiringPasteStore{pasteStore})
 	ephStore = gotimeout.NewMap()
+
+	accountPath := filepath.Join(arguments.root, "accounts")
+	os.Mkdir(accountPath, 0700)
+	userStore = &CachingUserStore{
+		AccountStore: &ManglingUserStore{
+			account.NewFilesystemStore(accountPath, &AuthChallengeProvider{}),
+		},
+	}
 }
 
 func main() {
@@ -585,7 +740,7 @@ func main() {
 		}
 	}()
 
-	router := mux.NewRouter()
+	router = mux.NewRouter()
 	pasteRouter = router.PathPrefix("/paste").Subrouter()
 
 	pasteRouter.Methods("GET").
@@ -597,9 +752,23 @@ func main() {
 		Handler(http.HandlerFunc(pasteCreate))
 
 	pasteRouter.Methods("GET").
+		Path("/{id}.json").
+		Handler(RequiredModelObjectHandler(lookupPasteWithRequest, ModelRenderFunc(getPasteJSONHandler))).
+		Name("show")
+
+	pasteRouter.Methods("GET").
 		Path("/{id}").
 		Handler(RequiredModelObjectHandler(lookupPasteWithRequest, RenderPageForModel("paste_show"))).
 		Name("show")
+
+	pasteRouter.Methods("GET").
+		Path("/{id}/grant").
+		Handler(RequiredModelObjectHandler(lookupPasteWithRequest, requiresEditPermission(ModelRenderFunc(pasteGrantHandler)))).
+		Name("grant")
+	pasteRouter.Methods("GET").
+		Path("/grant/{grantkey}/accept").
+		Handler(http.HandlerFunc(grantAcceptHandler)).
+		Name("grant_accept")
 
 	pasteRouter.Methods("GET").
 		Path("/{id}/raw").
@@ -626,6 +795,11 @@ func main() {
 		Path("/{id}/delete").
 		Handler(RequiredModelObjectHandler(lookupPasteWithRequest, requiresEditPermission(pasteDelete)))
 
+	pasteRouter.Methods("POST").
+		Path("/{id}/report").
+		Handler(RequiredModelObjectHandler(lookupPasteWithRequest, reportPaste)).
+		Name("report")
+
 	pasteRouter.Methods("GET").
 		MatcherFunc(HTTPSMuxMatcher).
 		Path("/{id}/authenticate").
@@ -641,6 +815,20 @@ func main() {
 		Path("/{id}/authenticate").
 		Handler(RenderPageHandler("paste_authenticate_disallowed"))
 
+	router.Path("/admin").Handler(requiresUserPermission("admin", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		RenderPage(w, r, "admin_home", reportStore.Reports)
+	})))
+
+	router.Methods("POST").
+		Path("/admin/paste/{id}/delete").
+		Handler(requiresUserPermission("admin", RequiredModelObjectHandler(lookupPasteWithRequest, pasteDelete))).
+		Name("admindelete")
+
+	router.Methods("POST").
+		Path("/admin/paste/{id}/clear_report").
+		Handler(requiresUserPermission("admin", http.HandlerFunc(reportClear))).
+		Name("reportclear")
+
 	pasteRouter.Methods("GET").Path("/").Handler(RedirectHandler("/"))
 
 	router.Path("/paste").Handler(RedirectHandler("/"))
@@ -649,19 +837,7 @@ func main() {
 	router.Path("/about").Handler(RenderPageHandler("about"))
 	router.Methods("GET", "HEAD").Path("/languages.json").Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-
-		if t, err := time.Parse(http.TimeFormat, r.Header.Get("If-Modified-Since")); err == nil && languageConfig.modtime.Before(t.Add(1*time.Second)) {
-			h := w.Header()
-			delete(h, "Content-Type")
-			delete(h, "Content-Length")
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-		w.Header().Set("Last-Modified", languageConfig.modtime.UTC().Format(http.TimeFormat))
-
-		if r.Method == "GET" {
-			w.Write(languageConfig.languageJSON)
-		}
+		http.ServeContent(w, r, "languages.json", languageConfig.modtime, languageConfig.languageJSONReader)
 	}))
 
 	launchTime := time.Now()
@@ -681,9 +857,19 @@ func main() {
 		stats["expiring"] = fmt.Sprintf("%d", pasteExpirator.Len())
 		RenderPage(w, r, "stats", stats)
 	}))
+
+	router.Methods("GET").
+		Path("/partial/{id}").
+		Handler(http.HandlerFunc(partialGetHandler))
+
+	router.Methods("POST").Path("/auth/login").Handler(http.HandlerFunc(authLoginPostHandler))
+	router.Methods("POST").Path("/auth/logout").Handler(http.HandlerFunc(authLogoutPostHandler))
+	router.Methods("GET").Path("/auth/token").Handler(http.HandlerFunc(authTokenHandler))
+	router.Methods("GET").Path("/auth/token/{token}").Handler(http.HandlerFunc(authTokenPageHandler)).Name("auth_token_login")
+
 	router.Path("/").Handler(RenderPageHandler("index"))
 	router.PathPrefix("/").Handler(http.FileServer(AssetFilesystem()))
-	http.Handle("/", &fourOhFourConsumerHandler{router})
+	http.Handle("/", &fourOhFourConsumerHandler{userLookupWrapper{router}})
 
 	var addr string = arguments.addr
 	server := &http.Server{
