@@ -1,14 +1,16 @@
 package main
 
 import (
-	"code.google.com/p/go.crypto/scrypt"
 	"crypto/aes"
 	"crypto/cipher"
-	"github.com/DHowett/go-xattr"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"code.google.com/p/go.crypto/scrypt"
+	"github.com/DHowett/go-xattr"
 )
 
 const CURRENT_ENCRYPTION_METHOD string = "2"
@@ -70,8 +72,8 @@ type PasteWriter struct {
 }
 
 func (pr *PasteWriter) Close() error {
-	pr.paste.Save()
-	return pr.WriteCloser.Close()
+	defer pr.WriteCloser.Close()
+	return pr.paste.Save()
 }
 
 type Paste struct {
@@ -80,6 +82,8 @@ type Paste struct {
 	Encrypted  bool
 	Expiration string
 	Title      string
+	Parent     PasteID
+	Children   []PasteID
 
 	store   PasteStore
 	mtime   time.Time
@@ -244,6 +248,16 @@ func (store *FilesystemPasteStore) Get(id PasteID, key []byte) (p *Paste, err er
 	paste.Language = LanguageNamed(getMetadata(filename, "language", "text"))
 	paste.Expiration = getMetadata(filename, "expiration", "")
 	paste.Title = getMetadata(filename, "title", "")
+	// PARENTS AND CHILDREN SHENANIGANS
+	paste.Parent = PasteID(getMetadata(filename, "parent", ""))
+
+	childrenAsString := getMetadata(filename, "children", "")
+	if childrenAsString != "" {
+		loadedChildren := strings.Split(childrenAsString, " ")
+		for _, value := range loadedChildren {
+			paste.Children = append(paste.Children, PasteID(value))
+		}
+	}
 
 	if paste.Expiration != "" {
 		if dur, err := ParseDuration(paste.Expiration); err == nil {
@@ -271,6 +285,22 @@ func (store *FilesystemPasteStore) Save(p *Paste) error {
 
 	if err := putMetadata(filename, "title", p.Title); err != nil {
 		return err
+	}
+	// more parents and children nonsense
+	if p.Parent != "" {
+		if err := putMetadata(filename, "parent", string(p.Parent)); err != nil {
+			return err
+		}
+	}
+
+	if p.Children != nil {
+		var stringedChildren  []string
+		for _, value := range p.Children {
+			stringedChildren = append(stringedChildren, string(value))
+		}
+		if err := putMetadata(filename, "children", strings.Join(stringedChildren, " ")); err != nil {
+			return err
+		}
 	}
 
 	if p.Encrypted {
