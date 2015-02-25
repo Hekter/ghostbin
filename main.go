@@ -843,6 +843,11 @@ func main() {
 		Handler(RequiredModelObjectHandler(lookupPasteWithRequest, reportPaste)).
 		Name("report")
 
+	pasteRouter.Methods("POST").
+		Path("/{id}/copy").
+		Handler(RequiredModelObjectHandler(lookupPasteWithRequest, copyPaste)).
+		Name("copy")
+
 	pasteRouter.Methods("GET").
 		MatcherFunc(HTTPSMuxMatcher).
 		Path("/{id}/authenticate").
