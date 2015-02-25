@@ -210,37 +210,57 @@ func requiresUserPermission(permission string, handler http.Handler) http.Handle
 }
 
 func pasteUpdate(o Model, w http.ResponseWriter, r *http.Request) {
-	pasteUpdateCore(o, w, r, false)
+	pasteUpdateCore(o, w, r, false, nil)
 }
 
-func pasteUpdateCore(o Model, w http.ResponseWriter, r *http.Request, newPaste bool) {
+func pasteUpdateCore(o Model, w http.ResponseWriter, r *http.Request, newPaste bool, parent *Paste) {
 	p := o.(*Paste)
-	body := r.FormValue("text")
-	if len(strings.TrimSpace(body)) == 0 {
-		w.Header().Set("Location", pasteURL("delete", p))
-		w.WriteHeader(http.StatusFound)
-		return
-	}
 
-	pasteLen := ByteSize(len(body))
-	if pasteLen > PASTE_MAXIMUM_LENGTH {
-		panic(PasteTooLargeError(pasteLen))
-	}
+	var body string
 
-	if !newPaste {
-		// If this is an update (instead of a new paste), blow away the hash.
-		tok := "P|H|" + p.ID.String()
-		v, _ := ephStore.Get(tok)
-		if hash, ok := v.(string); ok {
-			ephStore.Delete(hash)
-			ephStore.Delete(tok)
+	pw, err := p.Writer()
+	if err != nil {
+		panic(err)
+	}
+	if parent == nil {
+		body = r.FormValue("text")
+
+		if len(strings.TrimSpace(body)) == 0 {
+			w.Header().Set("Location", pasteURL("delete", p))
+			w.WriteHeader(http.StatusFound)
+			return
 		}
-	}
 
-	pw, _ := p.Writer()
-	pw.Write([]byte(body))
-	if r.FormValue("lang") != "" {
-		p.Language = LanguageNamed(r.FormValue("lang"))
+		pasteLen := ByteSize(len(body))
+		if pasteLen > PASTE_MAXIMUM_LENGTH {
+			panic(PasteTooLargeError(pasteLen))
+		}
+
+		if !newPaste {
+			// If this is an update (instead of a new paste), blow away the hash.
+			tok := "P|H|" + p.ID.String()
+			v, _ := ephStore.Get(tok)
+			if hash, ok := v.(string); ok {
+				ephStore.Delete(hash)
+				ephStore.Delete(tok)
+			}
+		}
+
+		pw.Write([]byte(body))
+		if r.FormValue("lang") != "" {
+			p.Language = LanguageNamed(r.FormValue("lang"))
+		}
+	} else {
+		parentReader, err := parent.Reader()
+		if err != nil {
+			panic(err)
+		}
+		io.Copy(pw, parentReader)
+		p.Language = parent.Language
+		p.Parent = parent.ID
+		parent.Children = append(parent.Children, p.ID)
+		parent.Save()
+		parentReader.Close()
 	}
 
 	if p.Language == nil {
@@ -260,11 +280,18 @@ func pasteUpdateCore(o Model, w http.ResponseWriter, r *http.Request, newPaste b
 		}
 	}
 
+	perms := GetPastePermissions(r)
+	perms.Put(p.ID, PastePermission{"edit": true, "grant": true})
+	perms.Save(w, r)
+
 	p.Expiration = expireIn
 
 	p.Title = r.FormValue("title")
 
-	pw.Close() // Saves p
+	err = pw.Close() // Saves p
+	if err != nil {
+		panic(err)
+	}
 
 	w.Header().Set("Location", pasteURL("show", p))
 	w.WriteHeader(http.StatusSeeOther)
@@ -272,6 +299,7 @@ func pasteUpdateCore(o Model, w http.ResponseWriter, r *http.Request, newPaste b
 
 func pasteCreate(w http.ResponseWriter, r *http.Request) {
 	body := r.FormValue("text")
+
 	if len(strings.TrimSpace(body)) == 0 {
 		// 400 here, 200 above (one is displayed to the user, one could be an API response.)
 		RenderError(fmt.Errorf("Hey, put some text in that paste."), 400, w)
@@ -300,7 +328,7 @@ func pasteCreate(w http.ResponseWriter, r *http.Request) {
 	if !encrypted {
 		v, _ := ephStore.Get(hashToken)
 		if hashedPaste, ok := v.(*Paste); ok {
-			pasteUpdateCore(hashedPaste, w, r, true)
+			pasteUpdateCore(hashedPaste, w, r, true, nil)
 			return
 		}
 	}
@@ -318,9 +346,9 @@ func pasteCreate(w http.ResponseWriter, r *http.Request) {
 	key := p.EncryptionKeyWithPassword(password)
 	p.SetEncryptionKey(key)
 
-	perms := GetPastePermissions(r)
-	perms.Put(p.ID, PastePermission{"edit": true, "grant": true})
-	perms.Save(w, r)
+//	perms := GetPastePermissions(r)
+//	perms.Put(p.ID, PastePermission{"edit": true, "grant": true})
+//	perms := GetPastePermissions(r)
 
 	if key != nil {
 		cliSession, err := clientOnlySessionStore.Get(r, "c_session")
@@ -341,7 +369,7 @@ func pasteCreate(w http.ResponseWriter, r *http.Request) {
 		glog.Errorln(err)
 	}
 
-	pasteUpdateCore(p, w, r, true)
+	pasteUpdateCore(p, w, r, true, nil)
 }
 
 func pasteDelete(o Model, w http.ResponseWriter, r *http.Request) {
