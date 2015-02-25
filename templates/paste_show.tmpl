@@ -19,6 +19,11 @@
 					<i class="icon-download icon-large"></i>
 					<span class="button-title">Download</span>
 				</a>
+				<form name="copyPaste" action="{{pasteURL "copy" .Obj}}" method="post">
+					<button title="Copy" type="submit" class="btn btn-inverse">
+						<i class="icon-edit icon-large"></i>
+					</button>
+				</form>
 			</div>
 			{{if not .Obj.Encrypted}}
 			<button title="Report" type="button" data-target="#reportModal" data-toggle="modal" class="btn btn-inverse">
@@ -40,6 +45,7 @@
 		{{end}}
 	</div>
 </div>
+Daddy: {{.Obj.Parent}} Kids: {{.Obj.Children}}
 {{if not .Obj.Language.SuppressLineNumbers}}<div class="code code-line-numbers unselectable" id="line-numbers" aria-hidden="true"></div>{{end}}
 <div class="code{{if .Obj.Language.DisplayStyle}} code-{{.Obj.Language.DisplayStyle}}{{end}}" id="code">{{render .Obj}}</div>
 <div class="well visible-phone unselectable" id="phone-paste-control-container"></div>
