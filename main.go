@@ -715,7 +715,6 @@ func init() {
 	})
 	RegisterTemplateFunction("requestVariable", requestVariable)
 	RegisterTemplateFunction("hasGenetics", func(p *Paste) bool {
-		glog.Info("I am a banana!")
 
 		if p.Parent != "" {
 			return true
