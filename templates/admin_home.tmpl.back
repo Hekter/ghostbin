@@ -8,7 +8,6 @@
 </div>
 <ul class="report-list">
 {{range $pasteID, $reportData := .Obj}}<li>
-	{{$test := pasteFromID $pasteID}}{{hasGenetics $test}}
 	<div class="report-buttons">
 		<a title="View Paste" href="/paste/{{$pasteID}}" target="_blank" class="btn btn-link"><i class="icon-file-text"></i></a>
 
@@ -33,6 +32,11 @@
 			{{$reportType}} x{{$count}}
 		{{end}}
 		</span>
+		{{with pasteFromID $pasteID}}{{hasGenetics .}}{{if hasGenetics .}}
+			<a title="View Genetics" href="/paste/{{$pasteID}}/genetics" target="_blank" class="btn btn-link">
+				<i class="icon-file-text"></i>
+			</a>
+		{{end}}{{end}}
 		</span>
 		<div class="well paste-miniature">
 			<div class="code">{{with pasteFromID $pasteID}}{{truncatedPasteBody . 5}}{{end}}</div>
