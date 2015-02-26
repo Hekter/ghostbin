@@ -714,13 +714,8 @@ func init() {
 		return b.String()
 	})
 	RegisterTemplateFunction("requestVariable", requestVariable)
-	RegisterTemplateFunction("hasGenetics", func(id PasteID) bool {
-		p, err := pasteStore.Get(id, nil)
+	RegisterTemplateFunction("hasGenetics", func(p *Paste) bool {
 		glog.Info("I am a banana!")
-
-		if err != nil {
-			glog.Fatal("Unable to load requested paste from ID.")
-		}
 
 		if p.Parent != "" {
 			return true
