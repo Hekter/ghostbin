@@ -346,9 +346,9 @@ func pasteCreate(w http.ResponseWriter, r *http.Request) {
 	key := p.EncryptionKeyWithPassword(password)
 	p.SetEncryptionKey(key)
 
-//	perms := GetPastePermissions(r)
-//	perms.Put(p.ID, PastePermission{"edit": true, "grant": true})
-//	perms := GetPastePermissions(r)
+	//	perms := GetPastePermissions(r)
+	//	perms.Put(p.ID, PastePermission{"edit": true, "grant": true})
+	//	perms := GetPastePermissions(r)
 
 	if key != nil {
 		cliSession, err := clientOnlySessionStore.Get(r, "c_session")
@@ -429,6 +429,29 @@ func lookupPasteWithRequest(r *http.Request) (Model, error) {
 		}
 	}
 	return p, err
+}
+
+func lookupAncestorPasteWithRequest(r *http.Request) (Model, error) {
+	o, err := lookupPasteWithRequest(r)
+
+	if err != nil {
+		return nil, err
+	}
+
+	p := o.(*Paste)
+
+	for p.Parent != "" {
+		pa, err := pasteStore.Get(p.Parent, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		if pa != nil {
+			p = pa
+		}
+	}
+
+	return p, nil
 }
 
 func pasteURL(routeType string, p *Paste) string {
@@ -888,6 +911,10 @@ func main() {
 		Path("/admin/paste/{id}/clear_report").
 		Handler(requiresUserPermission("admin", http.HandlerFunc(reportClear))).
 		Name("reportclear")
+
+	router.Path("/admin/paste/{id}/genetics").
+		Handler(requiresUserPermission("admin", RequiredModelObjectHandler(lookupAncestorPasteWithRequest, RenderPageForModel("paste_genetics")))).
+		Name("genetics")
 
 	pasteRouter.Methods("GET").Path("/").Handler(RedirectHandler("/"))
 

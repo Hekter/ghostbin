@@ -1,0 +1,17 @@
+{{define "paste_genetics_title"}}Genome Analysis{{end}}
+{{define "paste_genetics_body"}}
+<div class="paste-toolbox">
+	{{template "home-button"}}
+	<span class="paste-title">
+		<strong>Genome Analysis</strong>
+	</span>
+</div>
+{{template "element" .Obj}}
+{{end}}
+
+{{define "element"}}{{.ID}}
+	{{range .Children}}
+	<div class="child" style="margin-left:3em;">{{with pasteFromID .}}{{template "element" .}}{{end}}
+	</div>
+	{{end}}
+{{end}}
