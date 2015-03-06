@@ -325,6 +325,31 @@ func (store *FilesystemPasteStore) Save(p *Paste) error {
 }
 
 func (store *FilesystemPasteStore) Destroy(p *Paste) error {
+	if p.Parent != "" {
+		parent, _ := store.Get(p.Parent, nil)
+		if parent != nil {
+			myIndex := 0
+			for n, child := range parent.Children {
+				if child == p.ID {
+					myIndex = n
+					break
+				}
+			}
+
+			parent.Children = append(parent.Children[:myIndex], parent.Children[myIndex+1:]...)
+			parent.Save()
+		}
+	}
+
+	if p.Children != nil {
+		for _, child := range p.Children {
+			loadedChild, _ := store.Get(child, nil)
+			loadedChild.Parent = ""
+			err := loadedChild.Save()
+			glog.Error(err)
+		}
+	}
+
 	err := os.Remove(store.filenameForID(p.ID))
 	if err != nil {
 		return err
