@@ -11,6 +11,7 @@ import (
 
 	"code.google.com/p/go.crypto/scrypt"
 	"github.com/DHowett/go-xattr"
+	"github.com/golang/glog"
 )
 
 const CURRENT_ENCRYPTION_METHOD string = "2"
@@ -287,14 +288,12 @@ func (store *FilesystemPasteStore) Save(p *Paste) error {
 		return err
 	}
 	// more parents and children nonsense
-	if p.Parent != "" {
-		if err := putMetadata(filename, "parent", string(p.Parent)); err != nil {
-			return err
-		}
+	if err := putMetadata(filename, "parent", string(p.Parent)); err != nil {
+		return err
 	}
 
 	if p.Children != nil {
-		var stringedChildren  []string
+		var stringedChildren []string
 		for _, value := range p.Children {
 			stringedChildren = append(stringedChildren, string(value))
 		}
