@@ -13,7 +13,6 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -353,15 +352,14 @@ func pasteDelete(o Model, w http.ResponseWriter, r *http.Request) {
 	perms.Delete(oldId)
 	perms.Save(w, r)
 
-	components := append([]string{"/"}, strings.Split(r.URL.Path, "/")...)
-	n := 0
-	for i, v := range components {
-		if v == "paste" {
-			n = i
-			break
-		}
+	redirCheck := r.FormValue("redir")
+	fmt.Println(redirCheck)
+	if redirCheck == "adminReport" {
+		w.Header().Set("Location", "/admin/reports")
+	} else {
+		w.Header().Set("Location", "/")
 	}
-	w.Header().Set("Location", path.Join(components[:n]...))
+
 	w.WriteHeader(http.StatusFound)
 }
 

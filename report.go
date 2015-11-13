@@ -77,7 +77,7 @@ func reportPaste(o Model, w http.ResponseWriter, r *http.Request) {
 
 	reportStore.Add(p.ID, reason)
 
-	w.Header().Set("Location", "/")
+	w.Header().Set("Location", pasteURL("show", p))
 	w.WriteHeader(http.StatusFound)
 }
 
@@ -87,7 +87,7 @@ func reportClear(w http.ResponseWriter, r *http.Request) {
 	id := PasteIDFromString(mux.Vars(r)["id"])
 	reportStore.Delete(id)
 
-	w.Header().Set("Location", "/admin")
+	w.Header().Set("Location", "/admin/reports")
 	w.WriteHeader(http.StatusFound)
 }
 
