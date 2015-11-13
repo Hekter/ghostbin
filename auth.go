@@ -354,20 +354,24 @@ func (c *CachingUserStore) Create(name string) *account.User {
 
 type PromoteFirstUserToAdminStore struct {
 	directory string
+	firstUserCheck bool
 	account.AccountStore
 }
 
 func (c *PromoteFirstUserToAdminStore) Create(name string) *account.User {
 	firstUser := false
-	accountDir, err := os.Open(c.directory)
-	if err != nil {
-		firstUser = true
-	} else {
-		_, err = accountDir.Readdirnames(1)
-		if err == io.EOF {
+	if !c.firstUserCheck {
+		accountDir, err := os.Open(c.directory)
+		if err != nil {
 			firstUser = true
+		} else {
+			_, err = accountDir.Readdirnames(1)
+			if err == io.EOF {
+				firstUser = true
+			}
 		}
 	}
+
 	user := c.AccountStore.Create(name)
 	if firstUser {
 		user.Values["user.permissions"] = PastePermission{"admin": true}

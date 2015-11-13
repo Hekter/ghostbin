@@ -735,7 +735,7 @@ func init() {
 
 	accountPath := filepath.Join(arguments.root, "accounts")
 	os.Mkdir(accountPath, 0700)
-	userStore = &PromoteFirstUserToAdminStore{accountPath, &CachingUserStore{
+	userStore = &PromoteFirstUserToAdminStore{accountPath, false, &CachingUserStore{
 		AccountStore: &ManglingUserStore{
 			account.NewFilesystemStore(accountPath, &AuthChallengeProvider{}),
 		},
